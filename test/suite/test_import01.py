@@ -83,6 +83,13 @@ class test_import01(wttest.WiredTigerTestCase):
         # Perform a checkpoint.
         self.session.checkpoint()
 
+        # Export the metadata for the table.
+        c = self.session.open_cursor('metadata:', None, None)
+        original_db_file_config = c[uri]
+        c.close()
+        self.tty('\nFILE CONFIG\n' + original_db_file_config)
+        self.tty('\n')
+
         # Close the connection.
         self.close_conn()
 
@@ -92,13 +99,17 @@ class test_import01(wttest.WiredTigerTestCase):
         os.mkdir(newdir)
         self.conn = self.setUpConnectionOpen(newdir)
         self.session = self.setUpSessionOpen(self.conn)
-        self.session.create('table:db_table', create_config)
 
         # Copy over the datafiles for the object we want to import.
         self.copy_file(original_db_file, '.', newdir)
 
+        # Contruct the config string.
+        import_config = ('import=(enabled=true, repair=false)')
+        import_config = ('import=(enabled,repair=false,file_metadata=(' +
+            original_db_file_config + '),uri_metadata=)')
+
         # Import the file.
-        self.session.live_import(uri)
+        self.session.create(uri, import_config)
 
         # Verify object.
         self.session.verify(uri)
@@ -109,7 +120,6 @@ class test_import01(wttest.WiredTigerTestCase):
 
         # Perform a checkpoint.
         self.session.checkpoint()
-
 
 if __name__ == '__main__':
     wttest.run()

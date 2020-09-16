@@ -49,19 +49,20 @@ __wt_direct_io_size_check(
  *     Create a new 'file:' object.
  */
 static int
-__create_file(
-  WT_SESSION_IMPL *session, const char *uri, bool exclusive, bool import, const char *config)
+__create_file(WT_SESSION_IMPL *session, const char *uri, bool exclusive, const char *config)
 {
+    WT_CONFIG_ITEM cval;
     WT_DECL_ITEM(val);
     WT_DECL_RET;
     const char *filename, **p,
-      *filecfg[] = {WT_CONFIG_BASE(session, file_meta), config, NULL, NULL};
+      *filecfg[] = {WT_CONFIG_BASE(session, file_meta), config, NULL, NULL, NULL};
     char *fileconf;
     uint32_t allocsize;
-    bool exists, is_metadata;
+    bool exists, import, import_repair, is_metadata;
 
     fileconf = NULL;
 
+    import = import_repair = false;
     is_metadata = strcmp(uri, WT_METAFILE_URI) == 0;
 
     filename = uri;
@@ -91,6 +92,29 @@ __create_file(
     /* Sanity check the allocation size. */
     WT_ERR(__wt_direct_io_size_check(session, filecfg, "allocation_size", &allocsize));
 
+    /* Check if we are performaing an import operation. */
+    import = __wt_config_getones(session, config, "import.enabled", &cval) == 0 && cval.val != 0;
+    if (import) {
+        /* Do we need to reconstruct the metadata from the file? */
+        import_repair =
+          __wt_config_getones(session, config, "import.repair", &cval) == 0 && cval.val != 0;
+        if (!import_repair) {
+            WT_ERR(__wt_config_getones(session, config, "import.file_metadata", &cval));
+            if (cval.len != 0) {
+                /*
+                 * The string may be enclosed by delimiters (e.g. braces, quotes, parentheses)
+                 * to avoid configuration string characters acting as separators. Discard the
+                 * first and last characters.
+                 */
+                if (cval.type == WT_CONFIG_ITEM_STRUCT) {
+                    cval.str++;
+                    cval.len -=2;
+                }
+                WT_ERR(__wt_strndup(session, cval.str, cval.len, &filecfg[2]));
+            }
+        }
+    }
+
     if (!import) {
         /* Create the file. */
         WT_ERR(__wt_block_manager_create(session, filename, allocsize));
@@ -104,12 +128,13 @@ __create_file(
      * configuration and insert the resulting configuration into the metadata.
      */
     if (!is_metadata) {
-        if (import) {
+        if (import_repair) {
             WT_ERR(__wt_import(session, uri));
         } else {
             WT_ERR(__wt_scr_alloc(session, 0, &val));
             WT_ERR(__wt_buf_fmt(session, val, "id=%" PRIu32 ",version=(major=%d,minor=%d)",
-            ++S2C(session)->next_file_id, WT_BTREE_MAJOR_VERSION_MAX, WT_BTREE_MINOR_VERSION_MAX));
+              ++S2C(session)->next_file_id, WT_BTREE_MAJOR_VERSION_MAX,
+              WT_BTREE_MINOR_VERSION_MAX));
             for (p = filecfg; *p != NULL; ++p)
                 ;
             *p = val->data;
@@ -178,8 +203,7 @@ __wt_schema_colgroup_source(
  *     Create a column group.
  */
 static int
-__create_colgroup(WT_SESSION_IMPL *session, const char *name, bool exclusive, bool import,
-                  const char *config)
+__create_colgroup(WT_SESSION_IMPL *session, const char *name, bool exclusive, const char *config)
 {
     WT_CONFIG_ITEM cval;
     WT_DECL_RET;
@@ -259,7 +283,7 @@ __create_colgroup(WT_SESSION_IMPL *session, const char *name, bool exclusive, bo
     }
     sourcecfg[1] = fmt.data;
     WT_ERR(__wt_config_merge(session, sourcecfg, NULL, &sourceconf));
-    WT_ERR(__wt_schema_create(session, source, sourceconf, import));
+    WT_ERR(__wt_schema_create(session, source, sourceconf));
 
     WT_ERR(__wt_config_collapse(session, cfg, &cgconf));
 
@@ -508,7 +532,7 @@ __create_index(WT_SESSION_IMPL *session, const char *name, bool exclusive, const
     sourcecfg[1] = fmt.data;
     WT_ERR(__wt_config_merge(session, sourcecfg, NULL, &sourceconf));
 
-    WT_ERR(__wt_schema_create(session, source, sourceconf, false));
+    WT_ERR(__wt_schema_create(session, source, sourceconf));
 
     cfg[1] = sourceconf;
     cfg[2] = confbuf.data;
@@ -542,8 +566,7 @@ err:
  *     Create a table.
  */
 static int
-__create_table(WT_SESSION_IMPL *session, const char *uri, bool exclusive, bool import,
-               const char *config)
+__create_table(WT_SESSION_IMPL *session, const char *uri, bool exclusive, const char *config)
 {
     WT_CONFIG conf;
     WT_CONFIG_ITEM cgkey, cgval, cval;
@@ -584,7 +607,7 @@ __create_table(WT_SESSION_IMPL *session, const char *uri, bool exclusive, bool i
         cgsize = strlen("colgroup:") + strlen(tablename) + 1;
         WT_ERR(__wt_calloc_def(session, cgsize, &cgname));
         WT_ERR(__wt_snprintf(cgname, cgsize, "colgroup:%s", tablename));
-        WT_ERR(__create_colgroup(session, cgname, exclusive, import, config));
+        WT_ERR(__create_colgroup(session, cgname, exclusive, config));
     }
 
     /*
@@ -640,7 +663,7 @@ __create_data_source(
  *     Process a WT_SESSION::create operation for all supported types.
  */
 static int
-__schema_create(WT_SESSION_IMPL *session, const char *uri, const char *config, bool import)
+__schema_create(WT_SESSION_IMPL *session, const char *uri, const char *config)
 {
     WT_CONFIG_ITEM cval;
     WT_DATA_SOURCE *dsrc;
@@ -656,15 +679,15 @@ __schema_create(WT_SESSION_IMPL *session, const char *uri, const char *config, b
     WT_RET(__wt_meta_track_on(session));
 
     if (WT_PREFIX_MATCH(uri, "colgroup:"))
-        ret = __create_colgroup(session, uri, exclusive, import, config);
+        ret = __create_colgroup(session, uri, exclusive, config);
     else if (WT_PREFIX_MATCH(uri, "file:"))
-        ret = __create_file(session, uri, exclusive, import, config);
+        ret = __create_file(session, uri, exclusive, config);
     else if (WT_PREFIX_MATCH(uri, "lsm:"))
         ret = __wt_lsm_tree_create(session, uri, exclusive, config);
     else if (WT_PREFIX_MATCH(uri, "index:"))
         ret = __create_index(session, uri, exclusive, config);
     else if (WT_PREFIX_MATCH(uri, "table:"))
-        ret = __create_table(session, uri, exclusive, import, config);
+        ret = __create_table(session, uri, exclusive, config);
     else if ((dsrc = __wt_schema_get_source(session, uri)) != NULL)
         ret = dsrc->create == NULL ? __wt_object_unsupported(session, uri) :
                                      __create_data_source(session, uri, config, dsrc);
@@ -682,13 +705,13 @@ __schema_create(WT_SESSION_IMPL *session, const char *uri, const char *config, b
  *     Process a WT_SESSION::create operation for all supported types.
  */
 int
-__wt_schema_create(WT_SESSION_IMPL *session, const char *uri, const char *config, bool import)
+__wt_schema_create(WT_SESSION_IMPL *session, const char *uri, const char *config)
 {
     WT_DECL_RET;
     WT_SESSION_IMPL *int_session;
 
     WT_RET(__wt_schema_internal_session(session, &int_session));
-    ret = __schema_create(int_session, uri, config, import);
+    ret = __schema_create(int_session, uri, config);
     WT_TRET(__wt_schema_session_release(session, int_session));
     return (ret);
 }

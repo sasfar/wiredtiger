@@ -683,9 +683,8 @@ __wt_session_create(WT_SESSION_IMPL *session, const char *uri, const char *confi
 {
     WT_DECL_RET;
 
-    WT_WITH_SCHEMA_LOCK(
-      session, WT_WITH_TABLE_WRITE_LOCK(session,
-        ret = __wt_schema_create(session, uri, config, false)));
+    WT_WITH_SCHEMA_LOCK(session,
+      WT_WITH_TABLE_WRITE_LOCK(session, ret = __wt_schema_create(session, uri, config)));
     return (ret);
 }
 
@@ -1102,9 +1101,8 @@ __session_live_import(WT_SESSION *wt_session, const char *uri, const char *confi
         WT_ERR_MSG(session, EINVAL, "an object named \"%s\" already exists in the database", uri);
     WT_ERR_NOTFOUND_OK(ret, false);
 
-    WT_WITH_SCHEMA_LOCK(
-      session, WT_WITH_TABLE_WRITE_LOCK(session,
-        ret = __wt_schema_create(session, uri, config, true)));
+    WT_WITH_SCHEMA_LOCK(session,
+      WT_WITH_TABLE_WRITE_LOCK(session, ret = __wt_schema_create(session, uri, config)));
 
 err:
     if (ret != 0)

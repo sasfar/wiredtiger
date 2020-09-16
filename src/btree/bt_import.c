@@ -8,10 +8,6 @@
 
 #include "wt_internal.h"
 
-
-
-
-
 /*
  * __wt_import --
  *     Import a WiredTiger file into the database.
